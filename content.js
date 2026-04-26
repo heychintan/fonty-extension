@@ -366,26 +366,30 @@
 
   async function copyToClipboard(text) {
     if (!text) return;
-    let ok = false;
-    try {
-      if (navigator.clipboard && window.isSecureContext) {
+    // Prefer the legacy textarea + execCommand path. It runs synchronously
+    // inside the user-gesture click handler with no console noise, and it
+    // works regardless of secure-context or page Permissions-Policy.
+    let ok = copyViaTextarea(text);
+    if (!ok && navigator.clipboard && window.isSecureContext) {
+      try {
         await navigator.clipboard.writeText(text);
         ok = true;
-      }
-    } catch { /* fall through to legacy fallback */ }
-    if (!ok) {
-      // Fallback for non-secure contexts (http, file://) where the async
-      // Clipboard API is unavailable.
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.setAttribute("readonly", "");
-      ta.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0;";
-      document.body.appendChild(ta);
-      ta.select();
-      try { ok = document.execCommand("copy"); } catch { ok = false; }
-      ta.remove();
+      } catch { /* swallow — fallback toast below */ }
     }
     showToast(ok ? `Copied “${text}”` : "Copy failed", { variant: ok ? "success" : "error" });
+  }
+
+  function copyViaTextarea(text) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0;";
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch { ok = false; }
+    ta.remove();
+    return ok;
   }
 
   // Run an exit transition then call `finish`. Falls back to a timeout if no
