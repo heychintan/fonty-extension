@@ -278,12 +278,15 @@
       if (top + PANEL_EST_H > window.innerHeight - 8) top = 24;
       attempts++;
     }
+    const docLeft = left + window.scrollX;
+    const docTop = top + window.scrollY;
     panel.style.left = `${left}px`;
     panel.style.top = `${top}px`;
 
     panelLayer.appendChild(panel);
-    const entry = { el: panel, left, top };
+    const entry = { el: panel, left, top, docLeft, docTop };
     panels.push(entry);
+    ensurePanelScrollSync();
 
     requestAnimationFrame(() => panel.classList.add("is-in"));
 
@@ -333,6 +336,7 @@
     const finish = () => {
       panel.remove();
       if (panels.length === 0) {
+        teardownPanelScrollSync();
         restoreFocusAfterPanels();
         lastFocusedBeforePanel = null;
       }
@@ -356,6 +360,26 @@
 
   function closeAllPanels(immediate = false) {
     [...panels].forEach((p) => removePanel(p.el, immediate));
+  }
+
+  let panelScrollListener = null;
+  function ensurePanelScrollSync() {
+    if (panelScrollListener) return;
+    panelScrollListener = () => {
+      const sx = window.scrollX;
+      const sy = window.scrollY;
+      for (const p of panels) {
+        p.el.style.left = `${p.docLeft - sx}px`;
+        p.el.style.top = `${p.docTop - sy}px`;
+      }
+    };
+    window.addEventListener("scroll", panelScrollListener, { passive: true });
+  }
+
+  function teardownPanelScrollSync() {
+    if (!panelScrollListener) return;
+    window.removeEventListener("scroll", panelScrollListener);
+    panelScrollListener = null;
   }
 
   function escapeHtml(s) {
