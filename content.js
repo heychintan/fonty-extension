@@ -20,6 +20,7 @@
   let tooltipDims = { w: 0, h: 0 };
   let lastFocusedBeforePanel = null;
   let mouseDownPos = null; // for drag-vs-click detection
+  let cachedFontFaceRules = null; // populated lazily, cleared on deactivate
 
   const TEXT_TAGS = new Set([
     "P","SPAN","A","H1","H2","H3","H4","H5","H6","LI","TD","TH","DIV",
@@ -92,6 +93,9 @@
     document.removeEventListener("dragend", clearMouseDownPos, true);
     hideTooltip();
     closeAllPanels(true);
+    // Drop the per-session font-face cache so the next activation reflects
+    // any stylesheet changes that happened while inspect mode was off.
+    cachedFontFaceRules = null;
   }
 
   function clearMouseDownPos() { mouseDownPos = null; }
@@ -364,6 +368,7 @@
   }
 
   function collectFontFaceRules() {
+    if (cachedFontFaceRules) return cachedFontFaceRules;
     const rules = [];
     for (const sheet of document.styleSheets) {
       let cssRules;
@@ -380,6 +385,7 @@
         }
       }
     }
+    cachedFontFaceRules = rules;
     return rules;
   }
 
@@ -455,14 +461,29 @@
   const SHADOW_CSS = `
     :host {
       /* Design tokens — single source of truth for the popover surface. */
+      /* Default = dark theme. Light theme overrides live in the
+         @media (prefers-color-scheme: light) block below. */
       --fonty-bg: #0d0d0d;
-      --fonty-bg-elev: #111;
+      --fonty-bg-elev: #111;            /* tooltip stays dark in both modes */
       --fonty-fg: #f5f5f5;
+      --fonty-fg-strong: #f0f0f0;
       --fonty-fg-muted: #8a8a8a;
       --fonty-border: rgba(255,255,255,.06);
       --fonty-border-strong: rgba(255,255,255,.18);
+      --fonty-hover-bg: rgba(255,255,255,.08);
+      --fonty-toast-border: rgba(255,255,255,.08);
+
+      --fonty-btn-bg: #fff;
+      --fonty-btn-fg: #111;
+      --fonty-btn-bg-hover: #f0f0f0;
+      --fonty-btn-bg-disabled: #2a2a2a;
+      --fonty-btn-fg-disabled: #888;
+      --fonty-close-fg: #aaa;
+      --fonty-close-fg-hover: #fff;
+
       --fonty-accent-success: #1f9d55;
       --fonty-accent-error: #d24545;
+
       --fonty-radius-sm: 6px;
       --fonty-radius-md: 8px;
       --fonty-radius-lg: 12px;
@@ -472,6 +493,33 @@
       --fonty-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       --fonty-focus-ring: 0 0 0 2px var(--fonty-bg), 0 0 0 4px #4c9aff;
     }
+
+    @media (prefers-color-scheme: light) {
+      :host {
+        --fonty-bg: #ffffff;
+        /* --fonty-bg-elev intentionally NOT overridden — the tooltip is a
+           transient floating label and reads better as dark-on-light. */
+        --fonty-fg: #0d0d0d;
+        --fonty-fg-strong: #1a1a1a;
+        --fonty-fg-muted: #6a6a6a;        /* ≈ 5.0:1 on white, passes WCAG AA */
+        --fonty-border: rgba(0,0,0,.08);
+        --fonty-border-strong: rgba(0,0,0,.22);
+        --fonty-hover-bg: rgba(0,0,0,.06);
+        --fonty-toast-border: rgba(0,0,0,.06);
+
+        --fonty-btn-bg: #0d0d0d;
+        --fonty-btn-fg: #ffffff;
+        --fonty-btn-bg-hover: #1f1f1f;
+        --fonty-btn-bg-disabled: #ececec;
+        --fonty-btn-fg-disabled: #999;
+        --fonty-close-fg: #6a6a6a;
+        --fonty-close-fg-hover: #0d0d0d;
+
+        --fonty-shadow-sm: 0 6px 20px rgba(0,0,0,.12);
+        --fonty-shadow-lg: 0 18px 48px rgba(0,0,0,.18), 0 2px 8px rgba(0,0,0,.08);
+      }
+    }
+
     :host, * { box-sizing: border-box; }
 
     .fonty-tooltip {
@@ -519,7 +567,7 @@
     .fp-close {
       all: unset;
       cursor: pointer;
-      color: #aaa;
+      color: var(--fonty-close-fg);
       width: 36px; height: 36px;
       display: grid; place-items: center;
       border-radius: var(--fonty-radius-sm);
@@ -530,17 +578,17 @@
       transition: transform 140ms ease;
       display: inline-block;
     }
-    .fp-close:hover { color: #fff; background: rgba(255,255,255,.08); }
+    .fp-close:hover { color: var(--fonty-close-fg-hover); background: var(--fonty-hover-bg); }
     .fp-close:hover .fp-close-glyph { transform: rotate(90deg); }
-    .fp-close:focus-visible { box-shadow: var(--fonty-focus-ring); color: #fff; }
+    .fp-close:focus-visible { box-shadow: var(--fonty-focus-ring); color: var(--fonty-close-fg-hover); }
 
     .fp-section { margin-bottom: 14px; }
     .fp-label {
       color: var(--fonty-fg-muted); font-size: 11px; letter-spacing: .04em;
       margin-bottom: 4px;
     }
-    .fp-val { font-size: 14px; color: #f0f0f0; }
-    .fp-stack { font-size: 13px; color: #f0f0f0; word-break: break-word; }
+    .fp-val { font-size: 14px; color: var(--fonty-fg-strong); }
+    .fp-stack { font-size: 13px; color: var(--fonty-fg-strong); word-break: break-word; }
     .fp-stack u { text-decoration: underline; text-underline-offset: 3px; }
 
     .fp-grid {
@@ -566,7 +614,8 @@
 
     .fp-foot { display: flex; justify-content: flex-end; }
     .fp-download {
-      all: unset; cursor: pointer; background: #fff; color: #111;
+      all: unset; cursor: pointer;
+      background: var(--fonty-btn-bg); color: var(--fonty-btn-fg);
       padding: 9px 16px; border-radius: var(--fonty-radius-md);
       font: 600 13px/1 var(--fonty-font);
       min-height: 36px; min-width: 44px;
@@ -574,8 +623,16 @@
       transition: transform 120ms ease, background 140ms ease, box-shadow 160ms ease;
       box-shadow: 0 1px 0 rgba(0,0,0,.05), 0 6px 14px rgba(0,0,0,.18);
     }
-    .fp-download[disabled] { background: #2a2a2a; color: #888; cursor: not-allowed; box-shadow: none; }
-    .fp-download:not([disabled]):hover { background: #f0f0f0; transform: translateY(-1px); box-shadow: 0 2px 0 rgba(0,0,0,.05), 0 10px 20px rgba(0,0,0,.22); }
+    .fp-download[disabled] {
+      background: var(--fonty-btn-bg-disabled);
+      color: var(--fonty-btn-fg-disabled);
+      cursor: not-allowed; box-shadow: none;
+    }
+    .fp-download:not([disabled]):hover {
+      background: var(--fonty-btn-bg-hover);
+      transform: translateY(-1px);
+      box-shadow: 0 2px 0 rgba(0,0,0,.05), 0 10px 20px rgba(0,0,0,.22);
+    }
     .fp-download:not([disabled]):active { transform: translateY(0); }
     .fp-download:focus-visible { box-shadow: var(--fonty-focus-ring); }
     .fp-download.is-pulse { animation: fp-pulse 360ms ease; }
@@ -594,10 +651,10 @@
       pointer-events: auto;
       display: inline-flex; align-items: center; gap: 10px;
       background: var(--fonty-bg); color: var(--fonty-fg);
-      border: 1px solid rgba(255,255,255,.08);
+      border: 1px solid var(--fonty-toast-border);
       font: 500 13px/1.3 var(--fonty-font);
       padding: 10px 14px; border-radius: var(--fonty-radius-pill);
-      box-shadow: 0 10px 30px rgba(0,0,0,.35), 0 2px 6px rgba(0,0,0,.25);
+      box-shadow: var(--fonty-shadow-sm);
       opacity: 0; transform: translateY(8px) scale(.98);
       transition: opacity 180ms ease-out, transform 220ms cubic-bezier(.2,.9,.2,1.05);
       max-width: min(560px, calc(100vw - 32px));

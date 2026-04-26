@@ -15,6 +15,7 @@ Hover any text to see the font family. Click to open a detailed inspect card. Do
 - **Stack multiple cards** — click on as many text elements as you want. Each opens its own card, anchored near where you clicked, cascading if they overlap. `Esc` closes them one at a time (most recent first); when the stack is empty, `Esc` exits inspect mode.
 - **Download the font file** — Fonty walks the page's `@font-face` rules, picks the best format available (woff2 → woff → ttf → otf), and downloads it via `chrome.downloads`. A toast confirms when the download completes.
 - **Subtle, polished motion** — entrance animations on the tooltip and card, swatch pop-in, hover micro-interactions on the close and download buttons, reduced-motion respected.
+- **Light + dark aware** — the inspect card and toast follow your system `prefers-color-scheme`. The hover tooltip stays dark in both modes for legibility against arbitrary page content.
 - **Self-contained UI** — everything renders inside a Shadow DOM so the page's CSS can't affect it (and Fonty's CSS can't affect the page).
 
 ## More examples
