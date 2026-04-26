@@ -16,6 +16,7 @@ Hover any text to see the font family. Click to open a detailed inspect card. Do
 - **Download the font file** — Fonty walks the page's `@font-face` rules, picks the best format available (woff2 → woff → ttf → otf), and downloads it via `chrome.downloads`. A toast confirms when the download completes.
 - **Subtle, polished motion** — entrance animations on the tooltip and card, swatch pop-in, hover micro-interactions on the close and download buttons, reduced-motion respected.
 - **Light + dark aware** — the inspect card and toast follow your system `prefers-color-scheme`. The hover tooltip stays dark in both modes for legibility against arbitrary page content.
+- **Quick copy** — hover the font name or the hex color to reveal a copy icon. One click puts the value on your clipboard with a confirmation toast. All other text in the card stays selectable with the browser's native blue selection if you want to copy a different fragment.
 - **Self-contained UI** — everything renders inside a Shadow DOM so the page's CSS can't affect it (and Fonty's CSS can't affect the page).
 
 ## More examples

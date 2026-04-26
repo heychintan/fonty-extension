@@ -30,6 +30,8 @@
 
   let dialogIdCounter = 0;
 
+  const COPY_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`;
+
   function ensureHost() {
     if (host) return;
     host = document.createElement("div");
@@ -229,7 +231,10 @@
     const restOfStack = stack.replace(primary, "").replace(/^,\s*/, ", ");
     panel.innerHTML = `
       <div class="fp-head">
-        <h2 class="fp-title" id="${titleId}">${escapeHtml(primary)} — ${escapeHtml(weight)} ${styleVal && styleVal !== "normal" ? escapeHtml(styleVal) : "regular"}</h2>
+        <div class="fp-title-wrap">
+          <h2 class="fp-title" id="${titleId}">${escapeHtml(primary)} — ${escapeHtml(weight)} ${styleVal && styleVal !== "normal" ? escapeHtml(styleVal) : "regular"}</h2>
+          <button class="fp-copy" type="button" aria-label="Copy font name" data-copy="${escapeHtml(primary)}" title="Copy font name">${COPY_SVG}</button>
+        </div>
         <button class="fp-close" type="button" aria-label="Close font details">
           <span class="fp-close-glyph" aria-hidden="true">×</span>
         </button>
@@ -244,7 +249,7 @@
         <div class="fp-cell"></div>
         <div class="fp-cell"><div class="fp-label">Size</div><div class="fp-val">${escapeHtml(size)}</div></div>
         <div class="fp-cell"><div class="fp-label">Line Height</div><div class="fp-val">${escapeHtml(lineHeight)}</div></div>
-        <div class="fp-cell"><div class="fp-label">Color</div><div class="fp-val fp-color"><span>${escapeHtml(colorHex)}</span><i style="background:${escapeHtml(colorRgb)}" aria-hidden="true"></i></div></div>
+        <div class="fp-cell"><div class="fp-label">Color</div><div class="fp-val fp-color"><span>${escapeHtml(colorHex)}</span><i style="background:${escapeHtml(colorRgb)}" aria-hidden="true"></i><button class="fp-copy fp-copy--sm" type="button" aria-label="Copy color value" data-copy="${escapeHtml(colorHex)}" title="Copy color">${COPY_SVG}</button></div></div>
       </div>
       <div class="fp-foot">
         <button class="fp-download" type="button" ${fontUrl ? "" : "disabled"} title="${fontUrl ? "Download font file" : "No downloadable font file found (likely a system font or cross-origin stylesheet)"}">
@@ -284,6 +289,13 @@
 
     panel.addEventListener("mousedown", () => bringToFront(panel));
     panel.querySelector(".fp-close").addEventListener("click", () => removePanel(panel));
+    panel.addEventListener("click", (e) => {
+      const btn = e.target.closest(".fp-copy");
+      if (!btn) return;
+      e.stopPropagation();
+      const value = btn.getAttribute("data-copy") || "";
+      copyToClipboard(value);
+    });
     const dl = panel.querySelector(".fp-download");
     if (dl && fontUrl) {
       dl.addEventListener("click", () => {
@@ -350,6 +362,30 @@
     return String(s).replace(/[&<>"']/g, (c) => ({
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
     }[c]));
+  }
+
+  async function copyToClipboard(text) {
+    if (!text) return;
+    let ok = false;
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        ok = true;
+      }
+    } catch { /* fall through to legacy fallback */ }
+    if (!ok) {
+      // Fallback for non-secure contexts (http, file://) where the async
+      // Clipboard API is unavailable.
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0;";
+      document.body.appendChild(ta);
+      ta.select();
+      try { ok = document.execCommand("copy"); } catch { ok = false; }
+      ta.remove();
+    }
+    showToast(ok ? `Copied “${text}”` : "Copy failed", { variant: ok ? "success" : "error" });
   }
 
   // Run an exit transition then call `finish`. Falls back to a timeout if no
@@ -558,12 +594,42 @@
     .fonty-panel.is-out { opacity: 0; transform: translateY(-4px) scale(.97); transition-duration: 140ms; }
 
     .fp-head { display:flex; align-items:center; justify-content:space-between; margin-bottom: 14px; gap: 12px; }
+    .fp-title-wrap {
+      display: flex; align-items: center; gap: 6px;
+      flex: 1; min-width: 0;
+    }
     .fp-title {
       font: 600 16px/1.25 var(--fonty-font);
       letter-spacing: .005em;
       margin: 0;
       color: var(--fonty-fg);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      min-width: 0;
     }
+
+    .fp-copy {
+      all: unset;
+      cursor: pointer;
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 28px; height: 28px;
+      flex: 0 0 auto;
+      border-radius: var(--fonty-radius-sm);
+      color: var(--fonty-fg-muted);
+      opacity: 0;
+      transition: opacity 120ms ease, background 140ms ease, color 140ms ease, transform 140ms ease;
+    }
+    .fp-copy svg { width: 14px; height: 14px; display: block; }
+    .fp-copy--sm { width: 22px; height: 22px; }
+    .fp-copy--sm svg { width: 12px; height: 12px; }
+
+    .fp-title-wrap:hover .fp-copy,
+    .fp-title-wrap:focus-within .fp-copy,
+    .fp-color:hover .fp-copy,
+    .fp-color:focus-within .fp-copy { opacity: 1; }
+
+    .fp-copy:hover { background: var(--fonty-hover-bg); color: var(--fonty-fg); }
+    .fp-copy:active { transform: scale(.92); }
+    .fp-copy:focus-visible { box-shadow: var(--fonty-focus-ring); opacity: 1; color: var(--fonty-fg); }
     .fp-close {
       all: unset;
       cursor: pointer;
@@ -684,7 +750,7 @@
 
     @media (prefers-reduced-motion: reduce) {
       .fonty-tooltip, .fonty-panel, .fp-close, .fp-close-glyph, .fp-download, .fp-color i,
-      .fonty-toast, .ft-spinner {
+      .fonty-toast, .ft-spinner, .fp-copy {
         transition: none !important; animation: none !important;
       }
     }
