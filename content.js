@@ -2,6 +2,13 @@
   if (window.__fontyInjected) return;
   window.__fontyInjected = true;
 
+  const lib = window.__fontyLib;
+  if (!lib) {
+    console.error("Fonty: lib.js failed to load before content.js");
+    return;
+  }
+  const { rgbToHex, guessExt, cssEscape, isClickNotDrag } = lib;
+
   const HOST_ID = "fonty-host";
   let active = false;
   let host = null;
@@ -9,13 +16,18 @@
   let tooltipEl = null;
   let panelLayer = null;
   let toastLayer = null;
-  const panels = []; // stack of open panel elements
+  const panels = []; // [{ el, left, top }]
+  let tooltipDims = { w: 0, h: 0 };
+  let lastFocusedBeforePanel = null;
+  let mouseDownPos = null; // for drag-vs-click detection
 
   const TEXT_TAGS = new Set([
     "P","SPAN","A","H1","H2","H3","H4","H5","H6","LI","TD","TH","DIV",
     "LABEL","BUTTON","BLOCKQUOTE","CODE","PRE","STRONG","EM","SMALL","B","I",
     "DT","DD","FIGCAPTION","CITE","Q","SUMMARY","CAPTION","ARTICLE","SECTION","ASIDE","HEADER","FOOTER","NAV","MAIN"
   ]);
+
+  let dialogIdCounter = 0;
 
   function ensureHost() {
     if (host) return;
@@ -30,7 +42,9 @@
 
     tooltipEl = document.createElement("div");
     tooltipEl.className = "fonty-tooltip";
-    tooltipEl.style.display = "none";
+    tooltipEl.setAttribute("role", "tooltip");
+    tooltipEl.setAttribute("aria-live", "polite");
+    tooltipEl.setAttribute("aria-atomic", "true");
     shadow.appendChild(tooltipEl);
 
     panelLayer = document.createElement("div");
@@ -39,6 +53,9 @@
 
     toastLayer = document.createElement("div");
     toastLayer.className = "fonty-toast-layer";
+    toastLayer.setAttribute("role", "status");
+    toastLayer.setAttribute("aria-live", "polite");
+    toastLayer.setAttribute("aria-atomic", "false");
     shadow.appendChild(toastLayer);
 
     document.documentElement.appendChild(host);
@@ -52,8 +69,13 @@
     document.addEventListener("mouseover", onMouseOver, true);
     document.addEventListener("mouseout", onMouseOut, true);
     document.addEventListener("mousemove", onMouseMove, true);
+    document.addEventListener("mousedown", onMouseDown, true);
     document.addEventListener("click", onClickCapture, true);
     document.addEventListener("keydown", onKeyDown, true);
+    // Clear stale drag state if pointer leaves the window or a drag completes
+    // outside our click handler — otherwise the next click can be misclassified.
+    window.addEventListener("blur", clearMouseDownPos, true);
+    document.addEventListener("dragend", clearMouseDownPos, true);
   }
 
   function deactivate() {
@@ -63,18 +85,22 @@
     document.removeEventListener("mouseover", onMouseOver, true);
     document.removeEventListener("mouseout", onMouseOut, true);
     document.removeEventListener("mousemove", onMouseMove, true);
+    document.removeEventListener("mousedown", onMouseDown, true);
     document.removeEventListener("click", onClickCapture, true);
     document.removeEventListener("keydown", onKeyDown, true);
+    window.removeEventListener("blur", clearMouseDownPos, true);
+    document.removeEventListener("dragend", clearMouseDownPos, true);
     hideTooltip();
     closeAllPanels(true);
   }
 
+  function clearMouseDownPos() { mouseDownPos = null; }
+
   function onKeyDown(e) {
     if (e.key !== "Escape") return;
     if (panels.length > 0) {
-      // Close most recently opened panel.
       const top = panels[panels.length - 1];
-      removePanel(top);
+      removePanel(top.el);
     } else {
       deactivate();
     }
@@ -118,13 +144,21 @@
   }
 
   function onMouseMove(e) {
-    if (tooltipEl && tooltipEl.style.display !== "none") {
+    if (tooltipEl && tooltipEl.classList.contains("is-in")) {
       positionTooltip(e.clientX, e.clientY);
     }
   }
 
+  function onMouseDown(e) {
+    if (isInsideShadowHost(e.target)) return;
+    mouseDownPos = { x: e.clientX, y: e.clientY };
+  }
+
   function onClickCapture(e) {
     if (isInsideShadowHost(e.target)) return;
+    const isClick = isClickNotDrag(mouseDownPos, { x: e.clientX, y: e.clientY }, 4);
+    mouseDownPos = null;
+    if (!isClick) return; // drag — let the page handle text selection
     const el = findTextElement(e.target);
     if (!el) return;
     e.preventDefault();
@@ -144,42 +178,31 @@
   function showTooltip(el, x, y) {
     const { primary } = getPrimaryFont(el);
     if (!primary) return hideTooltip();
-    tooltipEl.textContent = primary;
-    if (tooltipEl.style.display === "none") {
-      tooltipEl.style.display = "block";
-      tooltipEl.classList.remove("is-in");
-      // force reflow then enter
-      void tooltipEl.offsetWidth;
-      tooltipEl.classList.add("is-in");
+    if (tooltipEl.textContent !== primary) {
+      tooltipEl.textContent = primary;
+      // Measure once after content change. offsetWidth/offsetHeight are layout
+      // reads, but they happen on text change only — not per mousemove.
+      tooltipDims = { w: tooltipEl.offsetWidth, h: tooltipEl.offsetHeight };
     }
+    tooltipEl.classList.add("is-in");
     positionTooltip(x, y);
   }
 
   function positionTooltip(x, y) {
     const pad = 14;
-    const r = tooltipEl.getBoundingClientRect();
+    const { w, h } = tooltipDims;
     let left = x + pad;
     let top = y + pad;
-    if (left + r.width > window.innerWidth - 4) left = x - r.width - pad;
-    if (top + r.height > window.innerHeight - 4) top = y - r.height - pad;
-    tooltipEl.style.left = `${Math.max(4, left)}px`;
-    tooltipEl.style.top = `${Math.max(4, top)}px`;
+    if (left + w > window.innerWidth - 4) left = x - w - pad;
+    if (top + h > window.innerHeight - 4) top = y - h - pad;
+    left = Math.max(4, left);
+    top = Math.max(4, top);
+    tooltipEl.style.transform = `translate3d(${left}px, ${top}px, 0)`;
   }
 
   function hideTooltip() {
     if (!tooltipEl) return;
     tooltipEl.classList.remove("is-in");
-    tooltipEl.style.display = "none";
-  }
-
-  function rgbToHex(rgb) {
-    const m = rgb && rgb.match(/rgba?\(([^)]+)\)/);
-    if (!m) return rgb || "";
-    const parts = m[1].split(",").map((s) => s.trim());
-    const [r, g, b] = parts.map((p) => parseInt(p, 10));
-    const a = parts[3] !== undefined ? parseFloat(parts[3]) : 1;
-    const hex = "#" + [r, g, b].map((n) => n.toString(16).padStart(2, "0")).join("");
-    return a < 1 ? `${hex} (${Math.round(a * 100)}%)` : hex;
   }
 
   function openPanel(el, clickX, clickY) {
@@ -194,11 +217,18 @@
 
     const panel = document.createElement("div");
     panel.className = "fonty-panel";
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-modal", "false");
+    const titleId = `fonty-title-${++dialogIdCounter}`;
+    panel.setAttribute("aria-labelledby", titleId);
+
     const restOfStack = stack.replace(primary, "").replace(/^,\s*/, ", ");
     panel.innerHTML = `
       <div class="fp-head">
-        <div class="fp-title">${escapeHtml(primary)} — ${escapeHtml(weight)} ${styleVal && styleVal !== "normal" ? escapeHtml(styleVal) : "regular"}</div>
-        <button class="fp-close" aria-label="Close">×</button>
+        <h2 class="fp-title" id="${titleId}">${escapeHtml(primary)} — ${escapeHtml(weight)} ${styleVal && styleVal !== "normal" ? escapeHtml(styleVal) : "regular"}</h2>
+        <button class="fp-close" type="button" aria-label="Close font details">
+          <span class="fp-close-glyph" aria-hidden="true">×</span>
+        </button>
       </div>
       <div class="fp-section">
         <div class="fp-label">Family</div>
@@ -210,10 +240,10 @@
         <div class="fp-cell"></div>
         <div class="fp-cell"><div class="fp-label">Size</div><div class="fp-val">${escapeHtml(size)}</div></div>
         <div class="fp-cell"><div class="fp-label">Line Height</div><div class="fp-val">${escapeHtml(lineHeight)}</div></div>
-        <div class="fp-cell"><div class="fp-label">Color</div><div class="fp-val fp-color"><span>${escapeHtml(colorHex)}</span><i style="background:${escapeAttr(colorRgb)}"></i></div></div>
+        <div class="fp-cell"><div class="fp-label">Color</div><div class="fp-val fp-color"><span>${escapeHtml(colorHex)}</span><i style="background:${escapeHtml(colorRgb)}" aria-hidden="true"></i></div></div>
       </div>
       <div class="fp-foot">
-        <button class="fp-download" ${fontUrl ? "" : "disabled"} title="${fontUrl ? "Download font file" : "No downloadable font file found (likely a system font or cross-origin stylesheet)"}">
+        <button class="fp-download" type="button" ${fontUrl ? "" : "disabled"} title="${fontUrl ? "Download font file" : "No downloadable font file found (likely a system font or cross-origin stylesheet)"}">
           ${fontUrl ? "Download font" : "Download unavailable"}
         </button>
       </div>
@@ -228,9 +258,11 @@
     if (top + PANEL_EST_H > window.innerHeight - 8) top = Math.max(12, window.innerHeight - PANEL_EST_H - 12);
     if (left < 12) left = 12;
     if (top < 12) top = 12;
-    // cascade offset if overlapping existing
     let attempts = 0;
-    while (attempts < 8 && panels.some((p) => Math.abs(parseFloat(p.style.left) - left) < 8 && Math.abs(parseFloat(p.style.top) - top) < 8)) {
+    while (
+      attempts < 8 &&
+      panels.some((p) => Math.abs(p.left - left) < 8 && Math.abs(p.top - top) < 8)
+    ) {
       left += 24;
       top += 24;
       if (left + PANEL_W > window.innerWidth - 8) left = 24;
@@ -241,12 +273,11 @@
     panel.style.top = `${top}px`;
 
     panelLayer.appendChild(panel);
-    panels.push(panel);
+    const entry = { el: panel, left, top };
+    panels.push(entry);
 
-    // entrance animation
     requestAnimationFrame(() => panel.classList.add("is-in"));
 
-    // wire interactions
     panel.addEventListener("mousedown", () => bringToFront(panel));
     panel.querySelector(".fp-close").addEventListener("click", () => removePanel(panel));
     const dl = panel.querySelector(".fp-download");
@@ -258,34 +289,57 @@
       });
     }
 
+    // Focus management: remember the element that had focus, then move focus
+    // to the close button so keyboard users can dismiss/tab into the panel.
+    if (!lastFocusedBeforePanel && document.activeElement && document.activeElement !== document.body) {
+      lastFocusedBeforePanel = document.activeElement;
+    }
+    requestAnimationFrame(() => {
+      const closeBtn = panel.querySelector(".fp-close");
+      if (closeBtn) closeBtn.focus({ preventScroll: true });
+    });
+
     bringToFront(panel);
   }
 
   function bringToFront(panel) {
-    const idx = panels.indexOf(panel);
+    const idx = panels.findIndex((p) => p.el === panel);
     if (idx === -1) return;
-    panels.splice(idx, 1);
-    panels.push(panel);
-    panels.forEach((p, i) => (p.style.zIndex = String(10 + i)));
+    const [entry] = panels.splice(idx, 1);
+    panels.push(entry);
+    panels.forEach((p, i) => (p.el.style.zIndex = String(10 + i)));
   }
 
   function removePanel(panel, immediate = false) {
-    const idx = panels.indexOf(panel);
+    const idx = panels.findIndex((p) => p.el === panel);
     if (idx === -1) return;
     panels.splice(idx, 1);
-    if (immediate) {
+    const finish = () => {
       panel.remove();
-      return;
+      if (panels.length === 0) {
+        restoreFocusAfterPanels();
+        lastFocusedBeforePanel = null;
+      }
+    };
+    if (immediate) finish();
+    else animateOut(panel, finish, 300);
+  }
+
+  function restoreFocusAfterPanels() {
+    const target = lastFocusedBeforePanel;
+    if (target && target.isConnected) {
+      try { target.focus({ preventScroll: true }); } catch { /* fall through */ }
+      if (document.activeElement === target) return;
     }
-    panel.classList.remove("is-in");
-    panel.classList.add("is-out");
-    panel.addEventListener("transitionend", () => panel.remove(), { once: true });
-    // safety
-    setTimeout(() => panel.isConnected && panel.remove(), 300);
+    // Explicit fallback: blur whatever inherited focus from the removed dialog
+    // so it doesn't sit on a detached element.
+    if (document.activeElement && typeof document.activeElement.blur === "function") {
+      document.activeElement.blur();
+    }
   }
 
   function closeAllPanels(immediate = false) {
-    [...panels].forEach((p) => removePanel(p, immediate));
+    [...panels].forEach((p) => removePanel(p.el, immediate));
   }
 
   function escapeHtml(s) {
@@ -293,7 +347,21 @@
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
     }[c]));
   }
-  function escapeAttr(s) { return escapeHtml(s); }
+
+  // Run an exit transition then call `finish`. Falls back to a timeout if no
+  // transition fires (e.g. reduced-motion strips transitions). Idempotent.
+  function animateOut(el, finish, fallbackMs = 300) {
+    let done = false;
+    const cleanup = () => {
+      if (done) return;
+      done = true;
+      finish();
+    };
+    el.classList.remove("is-in");
+    el.classList.add("is-out");
+    el.addEventListener("transitionend", cleanup, { once: true });
+    setTimeout(cleanup, fallbackMs);
+  }
 
   function collectFontFaceRules() {
     const rules = [];
@@ -302,53 +370,21 @@
       try { cssRules = sheet.cssRules; } catch { continue; }
       if (!cssRules) continue;
       for (const r of cssRules) {
-        if (r.type === CSSRule.FONT_FACE_RULE) rules.push(r);
+        if (r.type === CSSRule.FONT_FACE_RULE) {
+          rules.push({
+            family: r.style.getPropertyValue("font-family"),
+            weight: r.style.getPropertyValue("font-weight"),
+            style: r.style.getPropertyValue("font-style"),
+            src: r.style.getPropertyValue("src"),
+          });
+        }
       }
     }
     return rules;
   }
 
-  function normalizeFamily(name) {
-    return String(name || "").trim().replace(/^['"]|['"]$/g, "").toLowerCase();
-  }
-
   function findFontUrlForFamily(family, weight, style) {
-    const target = normalizeFamily(family);
-    const rules = collectFontFaceRules();
-    let best = null;
-    let bestScore = -1;
-    for (const r of rules) {
-      const fam = normalizeFamily(r.style.getPropertyValue("font-family"));
-      if (fam !== target) continue;
-      const w = (r.style.getPropertyValue("font-weight") || "normal").trim();
-      const s = (r.style.getPropertyValue("font-style") || "normal").trim();
-      const src = r.style.getPropertyValue("src") || "";
-      const url = pickBestUrl(src);
-      if (!url) continue;
-      let score = 1;
-      if (w === String(weight) || (w === "normal" && String(weight) === "400") || (w === "bold" && String(weight) === "700")) score += 2;
-      if (s === style) score += 1;
-      if (score > bestScore) {
-        bestScore = score;
-        best = url;
-      }
-    }
-    return best;
-  }
-
-  function pickBestUrl(srcValue) {
-    const re = /url\(\s*(['"]?)([^'")]+)\1\s*\)(\s*format\(\s*(['"]?)([^'")]+)\4\s*\))?/g;
-    const candidates = [];
-    let m;
-    while ((m = re.exec(srcValue)) !== null) {
-      candidates.push({ url: m[2], format: (m[5] || "").toLowerCase() });
-    }
-    if (!candidates.length) return null;
-    const order = ["woff2", "woff", "truetype", "opentype", ""];
-    candidates.sort((a, b) => order.indexOf(a.format) - order.indexOf(b.format));
-    let url = candidates[0].url;
-    try { url = new URL(url, document.baseURI).href; } catch {}
-    return url;
+    return lib.pickFontUrlFromRules(collectFontFaceRules(), family, weight, style, document.baseURI);
   }
 
   function downloadFont(url, family, weight, style) {
@@ -367,7 +403,6 @@
         a.remove();
         showToast(`Downloaded ${filename}`, { variant: "success", replaceId: filename });
       }
-      // success path is handled by FONTY_DOWNLOAD_DONE message from background
     });
   }
 
@@ -380,9 +415,14 @@
     }
     const t = document.createElement("div");
     t.className = `fonty-toast fonty-toast--${variant}`;
+    if (variant === "error") {
+      t.setAttribute("role", "alert");
+    } else {
+      t.setAttribute("role", "status");
+    }
     if (id) t.setAttribute("data-toast-id", id);
     t.innerHTML = `
-      <span class="ft-icon">${variant === "loading" ? `<span class="ft-spinner"></span>` : variant === "error" ? "!" : "✓"}</span>
+      <span class="ft-icon" aria-hidden="true">${variant === "loading" ? `<span class="ft-spinner"></span>` : variant === "error" ? "!" : "✓"}</span>
       <span class="ft-msg"></span>
     `;
     t.querySelector(".ft-msg").textContent = message;
@@ -397,19 +437,7 @@
 
   function dismissToast(t) {
     if (!t || !t.isConnected) return;
-    t.classList.remove("is-in");
-    t.classList.add("is-out");
-    t.addEventListener("transitionend", () => t.remove(), { once: true });
-    setTimeout(() => t.isConnected && t.remove(), 400);
-  }
-
-  function cssEscape(s) {
-    return String(s).replace(/["\\]/g, "\\$&");
-  }
-
-  function guessExt(url) {
-    const m = url.match(/\.(woff2|woff|ttf|otf|eot)(\?|#|$)/i);
-    return m ? m[1].toLowerCase() : "font";
+    animateOut(t, () => t.remove(), 400);
   }
 
   chrome.runtime.onMessage.addListener((msg) => {
@@ -425,33 +453,54 @@
   });
 
   const SHADOW_CSS = `
+    :host {
+      /* Design tokens — single source of truth for the popover surface. */
+      --fonty-bg: #0d0d0d;
+      --fonty-bg-elev: #111;
+      --fonty-fg: #f5f5f5;
+      --fonty-fg-muted: #8a8a8a;
+      --fonty-border: rgba(255,255,255,.06);
+      --fonty-border-strong: rgba(255,255,255,.18);
+      --fonty-accent-success: #1f9d55;
+      --fonty-accent-error: #d24545;
+      --fonty-radius-sm: 6px;
+      --fonty-radius-md: 8px;
+      --fonty-radius-lg: 12px;
+      --fonty-radius-pill: 999px;
+      --fonty-shadow-sm: 0 6px 20px rgba(0,0,0,.28);
+      --fonty-shadow-lg: 0 24px 60px rgba(0,0,0,.55), 0 2px 8px rgba(0,0,0,.4);
+      --fonty-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --fonty-focus-ring: 0 0 0 2px var(--fonty-bg), 0 0 0 4px #4c9aff;
+    }
     :host, * { box-sizing: border-box; }
 
     .fonty-tooltip {
       position: fixed; left: 0; top: 0;
-      background: #111; color: #fff;
-      font: 500 13px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      padding: 8px 12px; border-radius: 6px;
+      transform: translate3d(0, 0, 0);
+      background: var(--fonty-bg-elev); color: #fff;
+      font: 500 13px/1.2 var(--fonty-font);
+      padding: 8px 12px; border-radius: var(--fonty-radius-sm);
       pointer-events: none;
-      box-shadow: 0 6px 20px rgba(0,0,0,.28);
+      box-shadow: var(--fonty-shadow-sm);
       white-space: nowrap; max-width: 60vw; overflow: hidden; text-overflow: ellipsis;
-      opacity: 0; transform: translateY(4px) scale(.96);
-      transition: opacity 120ms ease-out, transform 160ms cubic-bezier(.2,.8,.2,1);
+      visibility: hidden; opacity: 0;
+      transition: opacity 120ms ease-out, visibility 0s linear 120ms;
       will-change: opacity, transform;
     }
-    .fonty-tooltip.is-in { opacity: 1; transform: translateY(0) scale(1); }
-
-    .fonty-panel-layer {
-      position: fixed; inset: 0; pointer-events: none;
+    .fonty-tooltip.is-in {
+      visibility: visible; opacity: 1;
+      transition: opacity 120ms ease-out, visibility 0s linear 0s;
     }
+
+    .fonty-panel-layer { position: fixed; inset: 0; pointer-events: none; }
 
     .fonty-panel {
       position: fixed; width: 440px; max-width: calc(100vw - 24px);
-      background: #0d0d0d; color: #f5f5f5;
-      font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      border-radius: 12px; padding: 18px 20px 16px;
-      border: 1px solid rgba(255,255,255,.06);
-      box-shadow: 0 24px 60px rgba(0,0,0,.55), 0 2px 8px rgba(0,0,0,.4);
+      background: var(--fonty-bg); color: var(--fonty-fg);
+      font: 14px/1.4 var(--fonty-font);
+      border-radius: var(--fonty-radius-lg); padding: 18px 20px 16px;
+      border: 1px solid var(--fonty-border);
+      box-shadow: var(--fonty-shadow-lg);
       pointer-events: auto;
       opacity: 0; transform: translateY(-6px) scale(.97);
       transition: opacity 180ms ease-out, transform 220ms cubic-bezier(.2,.9,.2,1.05), box-shadow 180ms ease;
@@ -461,19 +510,34 @@
     .fonty-panel.is-out { opacity: 0; transform: translateY(-4px) scale(.97); transition-duration: 140ms; }
 
     .fp-head { display:flex; align-items:center; justify-content:space-between; margin-bottom: 14px; gap: 12px; }
-    .fp-title { font-weight: 600; font-size: 16px; letter-spacing: .005em; }
+    .fp-title {
+      font: 600 16px/1.25 var(--fonty-font);
+      letter-spacing: .005em;
+      margin: 0;
+      color: var(--fonty-fg);
+    }
     .fp-close {
-      all: unset; cursor: pointer; color: #aaa; font-size: 20px; line-height: 1;
-      width: 26px; height: 26px; display: grid; place-items: center;
-      border-radius: 6px;
+      all: unset;
+      cursor: pointer;
+      color: #aaa;
+      width: 36px; height: 36px;
+      display: grid; place-items: center;
+      border-radius: var(--fonty-radius-sm);
       transition: background 140ms ease, color 140ms ease, transform 140ms ease;
     }
-    .fp-close:hover { color: #fff; background: rgba(255,255,255,.08); transform: rotate(90deg); }
+    .fp-close-glyph {
+      font-size: 20px; line-height: 1;
+      transition: transform 140ms ease;
+      display: inline-block;
+    }
+    .fp-close:hover { color: #fff; background: rgba(255,255,255,.08); }
+    .fp-close:hover .fp-close-glyph { transform: rotate(90deg); }
+    .fp-close:focus-visible { box-shadow: var(--fonty-focus-ring); color: #fff; }
 
     .fp-section { margin-bottom: 14px; }
     .fp-label {
-      color: #8a8a8a; font-size: 11px; letter-spacing: .04em;
-      margin-bottom: 4px; text-transform: none;
+      color: var(--fonty-fg-muted); font-size: 11px; letter-spacing: .04em;
+      margin-bottom: 4px;
     }
     .fp-val { font-size: 14px; color: #f0f0f0; }
     .fp-stack { font-size: 13px; color: #f0f0f0; word-break: break-word; }
@@ -491,8 +555,7 @@
     .fp-color { display: flex; align-items: center; gap: 8px; }
     .fp-color i {
       display:inline-block; width: 14px; height: 14px; border-radius: 3px;
-      border: 1px solid rgba(255,255,255,.18);
-      box-shadow: 0 0 0 0 rgba(255,255,255,0);
+      border: 1px solid var(--fonty-border-strong);
       animation: fp-swatch-pop 360ms cubic-bezier(.2,.9,.2,1.4) both;
     }
     @keyframes fp-swatch-pop {
@@ -504,13 +567,17 @@
     .fp-foot { display: flex; justify-content: flex-end; }
     .fp-download {
       all: unset; cursor: pointer; background: #fff; color: #111;
-      padding: 9px 16px; border-radius: 8px; font-weight: 600; font-size: 13px;
+      padding: 9px 16px; border-radius: var(--fonty-radius-md);
+      font: 600 13px/1 var(--fonty-font);
+      min-height: 36px; min-width: 44px;
+      display: inline-flex; align-items: center; justify-content: center;
       transition: transform 120ms ease, background 140ms ease, box-shadow 160ms ease;
       box-shadow: 0 1px 0 rgba(0,0,0,.05), 0 6px 14px rgba(0,0,0,.18);
     }
     .fp-download[disabled] { background: #2a2a2a; color: #888; cursor: not-allowed; box-shadow: none; }
     .fp-download:not([disabled]):hover { background: #f0f0f0; transform: translateY(-1px); box-shadow: 0 2px 0 rgba(0,0,0,.05), 0 10px 20px rgba(0,0,0,.22); }
     .fp-download:not([disabled]):active { transform: translateY(0); }
+    .fp-download:focus-visible { box-shadow: var(--fonty-focus-ring); }
     .fp-download.is-pulse { animation: fp-pulse 360ms ease; }
     @keyframes fp-pulse {
       0% { transform: scale(1); }
@@ -526,10 +593,10 @@
     .fonty-toast {
       pointer-events: auto;
       display: inline-flex; align-items: center; gap: 10px;
-      background: #0d0d0d; color: #f5f5f5;
+      background: var(--fonty-bg); color: var(--fonty-fg);
       border: 1px solid rgba(255,255,255,.08);
-      font: 500 13px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      padding: 10px 14px; border-radius: 999px;
+      font: 500 13px/1.3 var(--fonty-font);
+      padding: 10px 14px; border-radius: var(--fonty-radius-pill);
       box-shadow: 0 10px 30px rgba(0,0,0,.35), 0 2px 6px rgba(0,0,0,.25);
       opacity: 0; transform: translateY(8px) scale(.98);
       transition: opacity 180ms ease-out, transform 220ms cubic-bezier(.2,.9,.2,1.05);
@@ -540,12 +607,12 @@
 
     .fonty-toast .ft-icon {
       display: grid; place-items: center;
-      width: 18px; height: 18px; border-radius: 999px;
+      width: 18px; height: 18px; border-radius: var(--fonty-radius-pill);
       font-size: 11px; font-weight: 700; line-height: 1;
       flex: 0 0 auto;
     }
-    .fonty-toast--success .ft-icon { background: #1f9d55; color: #fff; }
-    .fonty-toast--error   .ft-icon { background: #d24545; color: #fff; }
+    .fonty-toast--success .ft-icon { background: var(--fonty-accent-success); color: #fff; }
+    .fonty-toast--error   .ft-icon { background: var(--fonty-accent-error);  color: #fff; }
     .fonty-toast--loading .ft-icon { background: transparent; }
 
     .fonty-toast .ft-msg { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -559,7 +626,7 @@
     @keyframes ft-spin { to { transform: rotate(360deg); } }
 
     @media (prefers-reduced-motion: reduce) {
-      .fonty-tooltip, .fonty-panel, .fp-close, .fp-download, .fp-color i,
+      .fonty-tooltip, .fonty-panel, .fp-close, .fp-close-glyph, .fp-download, .fp-color i,
       .fonty-toast, .ft-spinner {
         transition: none !important; animation: none !important;
       }

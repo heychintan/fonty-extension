@@ -1,0 +1,9 @@
+{
+  "name": "fonty",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WhatFont-style Chrome extension: hover to identify fonts, click for details, download font files.",
+  "scripts": {
+    "test": "node --test 'test/**/*.test.js'"
+  }
+}

@@ -57,13 +57,23 @@ The extension works on any page — click the toolbar icon to start inspecting, 
 ```
 manifest.json    # MV3 manifest
 background.js    # service worker: action click + downloads bridge
+lib.js           # pure helpers (font URL parsing, color/family normalization, click-vs-drag)
 content.js       # injected on pages: tooltip, cards, font resolver, toasts
 content.css      # crosshair cursor while inspect mode is active
 icons/           # toolbar icons (16/32/48/128)
 screenshots/     # README assets
+test/            # Node test runner specs for lib.js helpers
 ```
 
 All UI elements live inside a single Shadow DOM root to keep page styles and the extension styles fully isolated.
+
+## Tests
+
+```
+npm test
+```
+
+Runs the Node built-in test runner against `lib.js` (font URL picking, family normalization, color conversion, click-vs-drag distance). 19 tests, no dependencies — `node` ≥ 20 only.
 
 ## Development notes
 

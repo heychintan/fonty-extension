@@ -1,3 +1,5 @@
-body.fonty-active, body.fonty-active * {
-  cursor: crosshair !important;
+@media (hover: hover) {
+  body.fonty-active {
+    cursor: crosshair;
+  }
 }
